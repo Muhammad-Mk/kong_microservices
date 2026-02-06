@@ -1,0 +1,257 @@
+# =============================================================================
+# Kong API Gateway + Microservices Demo - Docker Swarm Configuration
+# =============================================================================
+# 
+# This docker-compose file is designed for Docker Swarm deployment with:
+# - Kong API Gateway (DB-less mode) with Kong Manager OSS UI
+# - 4 Flask microservices with 3 replicas each
+# - Automatic load balancing via Swarm VIP
+#
+# Usage:
+#   docker swarm init  # (if not already in swarm mode)
+#   docker stack deploy -c docker-compose.swarm.yml kongdemo
+#
+# Access:
+# - Kong Gateway: http://localhost:8000
+# - Kong Manager UI: http://localhost:8002
+# - Admin API (local only): http://127.0.0.1:8001
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # Kong API Gateway with Kong Manager OSS
+  # ===========================================================================
+  kong:
+    image: kong:3.6
+    environment:
+      # DB-less mode configuration
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/declarative/kong.yml
+      
+      # Proxy settings
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      
+      # Listen configuration
+      KONG_PROXY_LISTEN: "0.0.0.0:8000, 0.0.0.0:8443 ssl"
+      KONG_ADMIN_LISTEN: "0.0.0.0:8001"
+      
+      # Kong Manager OSS UI configuration
+      KONG_ADMIN_GUI_LISTEN: "0.0.0.0:8002"
+      KONG_ADMIN_GUI_URL: "http://localhost:8002"
+      KONG_ADMIN_GUI_API_URL: "http://localhost:8001"
+      
+      # Performance tuning
+      KONG_NGINX_WORKER_PROCESSES: "2"
+      KONG_UPSTREAM_KEEPALIVE_POOL_SIZE: "60"
+      
+      # Logging
+      KONG_LOG_LEVEL: info
+      
+      # Plugins
+      KONG_PLUGINS: bundled
+      
+    configs:
+      - source: kong_config
+        target: /kong/declarative/kong.yml
+    ports:
+      # Kong Gateway Proxy (public API endpoint)
+      - "8000:8000"
+      - "8443:8443"
+      # Kong Admin API - localhost only for security
+      # Note: In Swarm mode, we use mode: host to bind to localhost only
+      - target: 8001
+        published: 8001
+        protocol: tcp
+        mode: host
+      # Kong Manager OSS UI
+      - "8002:8002"
+    networks:
+      - kong-network
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ===========================================================================
+  # Auth Service - 3 Replicas
+  # ===========================================================================
+  auth_service:
+    image: kong-auth-service:latest
+    build:
+      context: ./auth_service
+      dockerfile: Dockerfile
+    environment:
+      FLASK_ENV: production
+      JWT_SECRET_KEY: your-super-secret-key-change-in-production
+      JWT_ALGORITHM: HS256
+      JWT_ACCESS_TOKEN_EXPIRES: "3600"
+      JWT_REFRESH_TOKEN_EXPIRES: "604800"
+      LOG_LEVEL: INFO
+    networks:
+      - kong-network
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/auth/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ===========================================================================
+  # User Service - 3 Replicas
+  # ===========================================================================
+  user_service:
+    image: kong-user-service:latest
+    build:
+      context: ./user_service
+      dockerfile: Dockerfile
+    environment:
+      FLASK_ENV: production
+      JWT_SECRET_KEY: your-super-secret-key-change-in-production
+      JWT_ALGORITHM: HS256
+      LOG_LEVEL: INFO
+    networks:
+      - kong-network
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/users/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ===========================================================================
+  # Trade Service - 3 Replicas
+  # ===========================================================================
+  trade_service:
+    image: kong-trade-service:latest
+    build:
+      context: ./trade_service
+      dockerfile: Dockerfile
+    environment:
+      FLASK_ENV: production
+      JWT_SECRET_KEY: your-super-secret-key-change-in-production
+      JWT_ALGORITHM: HS256
+      LOG_LEVEL: INFO
+    networks:
+      - kong-network
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/trades/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ===========================================================================
+  # Notification Service - 3 Replicas
+  # ===========================================================================
+  notification_service:
+    image: kong-notification-service:latest
+    build:
+      context: ./notification_service
+      dockerfile: Dockerfile
+    environment:
+      FLASK_ENV: production
+      JWT_SECRET_KEY: your-super-secret-key-change-in-production
+      JWT_ALGORITHM: HS256
+      LOG_LEVEL: INFO
+    networks:
+      - kong-network
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/notifications/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  kong-network:
+    driver: overlay
+    attachable: true
+
+# =============================================================================
+# Configs - Kong declarative configuration
+# =============================================================================
+configs:
+  kong_config:
+    file: ./kong/kong.yml
