@@ -1,10 +1,11 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # =============================================================================
-# Docker Swarm Stack Removal Script
+# Kong Database Mode - Docker Swarm Stack Removal Script
 # =============================================================================
-# This script removes the kongdemo stack
-# Usage: ./scripts/swarm_down.sh
+# This script removes the kongdb stack but preserves PostgreSQL data volume
+#
+# Usage: ./scripts/db_swarm_down.sh
 # =============================================================================
 
 set -e
@@ -20,7 +21,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
 echo "=============================================="
-echo "Kong Microservices - Docker Swarm Removal"
+echo "Kong Database Mode - Stack Removal"
 echo "=============================================="
 echo ""
 
@@ -29,8 +30,8 @@ echo ""
 # -----------------------------------------------------------------------------
 echo -e "${YELLOW}[Step 1] Checking stack status...${NC}"
 
-if ! docker stack ls | grep -q kongdemo; then
-    echo -e "${YELLOW}Stack 'kongdemo' is not deployed${NC}"
+if ! docker stack ls 2>/dev/null | grep -q "kongdb"; then
+    echo -e "${YELLOW}Stack 'kongdb' is not deployed${NC}"
     exit 0
 fi
 
@@ -38,9 +39,9 @@ fi
 # Step 2: Remove the stack
 # -----------------------------------------------------------------------------
 echo ""
-echo -e "${YELLOW}[Step 2] Removing stack 'kongdemo'...${NC}"
+echo -e "${YELLOW}[Step 2] Removing stack 'kongdb'...${NC}"
 
-docker stack rm kongdemo
+docker stack rm kongdb
 
 # -----------------------------------------------------------------------------
 # Step 3: Wait for cleanup
@@ -48,11 +49,10 @@ docker stack rm kongdemo
 echo ""
 echo -e "${YELLOW}[Step 3] Waiting for cleanup...${NC}"
 
-# Wait for network to be removed (indicates full cleanup)
 MAX_WAIT=60
 WAITED=0
 while [ $WAITED -lt $MAX_WAIT ]; do
-    if ! docker network ls | grep -q kongdemo; then
+    if ! docker network ls 2>/dev/null | grep -q "kongdb"; then
         echo -e "${GREEN}Cleanup complete${NC}"
         break
     fi
@@ -73,9 +73,12 @@ echo "=============================================="
 echo -e "${GREEN}Stack Removed!${NC}"
 echo "=============================================="
 echo ""
-echo "To redeploy:"
-echo "  ./scripts/swarm_up.sh"
+echo -e "${YELLOW}Note: PostgreSQL data volume is preserved.${NC}"
+echo "To delete data volume: docker volume rm kongdb_kong_postgres_data"
 echo ""
-echo "To leave swarm mode (optional):"
-echo "  docker swarm leave --force"
+echo "To redeploy:"
+echo "  ./scripts/db_swarm_up.sh"
+echo ""
+echo "To switch to DB-less mode:"
+echo "  ./scripts/swarm_up.sh"
 echo ""

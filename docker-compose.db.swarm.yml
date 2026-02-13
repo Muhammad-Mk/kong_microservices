@@ -1,32 +1,92 @@
 # =============================================================================
-# Kong API Gateway + Microservices Demo - Docker Swarm Configuration
+# Kong API Gateway + Microservices Demo - Database Mode (PostgreSQL)
 # =============================================================================
 # 
-# This docker-compose file is designed for Docker Swarm deployment with:
-# - Kong API Gateway (DB-less mode) with Kong Manager OSS UI
-# - 4 Flask microservices with 3 replicas each
-# - Automatic load balancing via Swarm VIP
+# This docker-compose file runs Kong in DATABASE mode with PostgreSQL.
+# Configuration is managed via decK (GitOps) and persisted in Postgres.
 #
 # Usage:
-#   docker swarm init  # (if not already in swarm mode)
-#   docker stack deploy -c docker-compose.swarm.yml kongdemo
+#   ./scripts/db_swarm_up.sh   (deploys stack, runs migrations, syncs config)
+#   ./scripts/db_swarm_down.sh (removes stack)
 #
 # Access:
 # - Kong Gateway: http://localhost:8000
 # - Kong Manager UI: http://localhost:8002
 # - Admin API (local only): http://127.0.0.1:8001
+# - PostgreSQL (DBeaver): localhost:5432 (user: kong, pass: kongpassword)
+#
+# Config Management:
+# - Edit kong/kong.yml
+# - Run: ./scripts/deck_sync.sh
+# - Changes persisted in PostgreSQL
 # =============================================================================
 
 services:
   # ===========================================================================
-  # Kong API Gateway with Kong Manager OSS
+  # PostgreSQL Database for Kong
+  # ===========================================================================
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${KONG_PG_USER:-kong}
+      POSTGRES_PASSWORD: ${KONG_PG_PASSWORD:-kongpassword}
+      POSTGRES_DB: ${KONG_PG_DATABASE:-kong}
+    volumes:
+      - kong_postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - kong-network
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${KONG_PG_USER:-kong} -d ${KONG_PG_DATABASE:-kong}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ===========================================================================
+  # Kong Migrations (one-shot job, handled by db_swarm_up.sh script)
+  # This service is removed after deployment by the script.
+  # ===========================================================================
+  kong-migrations:
+    image: kong:3.6
+    command: sh -c "sleep 30 && kong migrations bootstrap"
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: postgres
+      KONG_PG_PORT: "5432"
+      KONG_PG_USER: ${KONG_PG_USER:-kong}
+      KONG_PG_PASSWORD: ${KONG_PG_PASSWORD:-kongpassword}
+      KONG_PG_DATABASE: ${KONG_PG_DATABASE:-kong}
+    networks:
+      - kong-network
+    deploy:
+      replicas: 0
+      restart_policy:
+        condition: none
+
+  # ===========================================================================
+  # Kong API Gateway (Database Mode)
   # ===========================================================================
   kong:
     image: kong:3.6
     environment:
-      # DB-less mode configuration
-      KONG_DATABASE: "off"
-      KONG_DECLARATIVE_CONFIG: /kong/declarative/kong.yml
+      # Database mode configuration
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: postgres
+      KONG_PG_PORT: "5432"
+      KONG_PG_USER: ${KONG_PG_USER:-kong}
+      KONG_PG_PASSWORD: ${KONG_PG_PASSWORD:-kongpassword}
+      KONG_PG_DATABASE: ${KONG_PG_DATABASE:-kong}
       
       # Proxy settings
       KONG_PROXY_ACCESS_LOG: /dev/stdout
@@ -53,15 +113,11 @@ services:
       # Plugins
       KONG_PLUGINS: bundled
       
-    configs:
-      - source: kong_config
-        target: /kong/declarative/kong.yml
     ports:
       # Kong Gateway Proxy (public API endpoint)
       - "8000:8000"
       - "8443:8443"
       # Kong Admin API - localhost only for security
-      # Note: In Swarm mode, we use mode: host to bind to localhost only
       - target: 8001
         published: 8001
         protocol: tcp
@@ -101,7 +157,7 @@ services:
       dockerfile: Dockerfile
     environment:
       FLASK_ENV: production
-      JWT_SECRET_KEY: your-super-secret-key-change-in-production
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-your-super-secret-key-change-in-production}
       JWT_ALGORITHM: HS256
       JWT_ACCESS_TOKEN_EXPIRES: "3600"
       JWT_REFRESH_TOKEN_EXPIRES: "604800"
@@ -120,9 +176,6 @@ services:
         delay: 10s
         order: start-first
         failure_action: rollback
-      rollback_config:
-        parallelism: 1
-        delay: 10s
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/auth/health')"]
       interval: 10s
@@ -140,7 +193,7 @@ services:
       dockerfile: Dockerfile
     environment:
       FLASK_ENV: production
-      JWT_SECRET_KEY: your-super-secret-key-change-in-production
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-your-super-secret-key-change-in-production}
       JWT_ALGORITHM: HS256
       LOG_LEVEL: INFO
     networks:
@@ -157,9 +210,6 @@ services:
         delay: 10s
         order: start-first
         failure_action: rollback
-      rollback_config:
-        parallelism: 1
-        delay: 10s
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/users/health')"]
       interval: 10s
@@ -177,7 +227,7 @@ services:
       dockerfile: Dockerfile
     environment:
       FLASK_ENV: production
-      JWT_SECRET_KEY: your-super-secret-key-change-in-production
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-your-super-secret-key-change-in-production}
       JWT_ALGORITHM: HS256
       LOG_LEVEL: INFO
     networks:
@@ -194,9 +244,6 @@ services:
         delay: 10s
         order: start-first
         failure_action: rollback
-      rollback_config:
-        parallelism: 1
-        delay: 10s
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/trades/health')"]
       interval: 10s
@@ -214,7 +261,7 @@ services:
       dockerfile: Dockerfile
     environment:
       FLASK_ENV: production
-      JWT_SECRET_KEY: your-super-secret-key-change-in-production
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-your-super-secret-key-change-in-production}
       JWT_ALGORITHM: HS256
       LOG_LEVEL: INFO
     networks:
@@ -231,9 +278,6 @@ services:
         delay: 10s
         order: start-first
         failure_action: rollback
-      rollback_config:
-        parallelism: 1
-        delay: 10s
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/notifications/health')"]
       interval: 10s
@@ -250,8 +294,8 @@ networks:
     attachable: true
 
 # =============================================================================
-# Configs - Kong declarative configuration
+# Volumes - Persistent storage for PostgreSQL
 # =============================================================================
-configs:
-  kong_config:
-    file: ./kong/kong.yml
+volumes:
+  kong_postgres_data:
+    driver: local

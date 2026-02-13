@@ -34,7 +34,8 @@ A production-like microservices demo showcasing Kong OSS API Gateway with Docker
 
 ## Features
 
-- **Kong API Gateway (DB-less mode)** - Declarative YAML configuration
+- **Kong API Gateway** - Supports DB-less and PostgreSQL database modes
+- **decK (GitOps)** - Manage Kong config via YAML with `deck sync`
 - **Kong Manager OSS UI** - Built-in web UI at port 8002
 - **Docker Swarm** - 3 replicas per service with automatic load balancing
 - **JWT Authentication** - Secure API access with token-based auth
@@ -43,7 +44,16 @@ A production-like microservices demo showcasing Kong OSS API Gateway with Docker
 - **Health Endpoints** - Instance-aware health checks for LB verification
 - **Security** - Internal services hidden, Admin API localhost-only
 
-## Quick Start
+## Deployment Modes
+
+This project supports two deployment modes:
+
+| Mode | Config Storage | Config Updates | Best For |
+|------|----------------|----------------|----------|
+| **DB-less** | YAML file | Redeploy stack | Development, CI/CD |
+| **Database** | PostgreSQL | `deck sync` (hot reload) | Production, GitOps |
+
+## Quick Start (DB-less Mode)
 
 ### Prerequisites
 
@@ -95,6 +105,96 @@ xxx            kongdemo_notification_service  replicated   3/3        kong-notif
 ```bash
 ./scripts/swarm_down.sh
 ```
+
+---
+
+## Quick Start (Database Mode with decK)
+
+Database mode stores configuration in PostgreSQL and uses decK for GitOps.
+
+### 1. Deploy with PostgreSQL
+
+```bash
+cd kong
+
+# Deploy the DB mode stack (includes migrations)
+./scripts/db_swarm_up.sh
+```
+
+This script:
+- Starts PostgreSQL with persistent volume
+- Runs Kong migrations (bootstrap/upgrade)
+- Starts Kong in database mode
+- Syncs `kong/kong.yml` via decK
+- Starts all microservices
+
+### 2. Verify Deployment
+
+```bash
+# Check all services
+docker stack services kongdb
+
+# Expected output:
+# kongdb_postgres              1/1
+# kongdb_kong                  1/1
+# kongdb_auth_service          3/3
+# kongdb_user_service          3/3
+# kongdb_trade_service         3/3
+# kongdb_notification_service  3/3
+```
+
+### 3. Managing Configuration
+
+```bash
+# Edit configuration
+vim kong/kong.yml
+
+# Preview changes (dry-run)
+./scripts/deck_diff.sh
+
+# Apply changes (hot reload - no restart needed!)
+./scripts/deck_sync.sh
+
+# Export current DB config to file (backup)
+./scripts/deck_dump.sh kong/kong.exported.yml
+```
+
+### 4. Verify Persistence
+
+```bash
+# Check routes exist
+curl http://127.0.0.1:8001/routes | jq '.data[].name'
+
+# Restart Kong
+docker service update --force kongdb_kong
+
+# Wait for Kong to restart
+sleep 30
+
+# Routes still exist (persisted in PostgreSQL!)
+curl http://127.0.0.1:8001/routes | jq '.data[].name'
+```
+
+### 5. Run Tests
+
+```bash
+# Same test scripts work for both modes
+./scripts/test_api.sh
+./scripts/test_rate_limit.sh
+./scripts/test_load_balance.sh
+```
+
+### 6. Stop Stack
+
+```bash
+# Removes stack but preserves PostgreSQL data volume
+./scripts/db_swarm_down.sh
+
+# To also delete data volume:
+docker volume rm kongdb_kong_postgres_data
+```
+
+---
 
 ## Access Points
 
@@ -201,32 +301,47 @@ Access at http://localhost:8002
 - **Plugins**: rate-limiting (global), cors (global), jwt (per-route)
 - **Consumers**: kong-demo-auth (JWT), notification-api-user (API key)
 
-### Limitations (DB-less Mode)
+### Configuration Changes by Mode
 
-Kong Manager is **read-only** in DB-less mode. To make changes:
+| Mode | Kong Manager | How to Change Config |
+|------|--------------|---------------------|
+| **DB-less** | Read-only | Edit `kong/kong.yml` + redeploy |
+| **Database** | Full access | Edit `kong/kong.yml` + `./scripts/deck_sync.sh` |
 
+**DB-less Mode:**
 1. Edit `kong/kong.yml`
 2. Redeploy: `./scripts/swarm_down.sh && ./scripts/swarm_up.sh`
+
+**Database Mode (recommended):**
+1. Edit `kong/kong.yml`
+2. Apply: `./scripts/deck_sync.sh` (no restart needed!)
 
 ## Project Structure
 
 ```
 kong/
-├── docker-compose.swarm.yml   # Swarm deployment config
-├── docker-compose.yml         # Standard compose (for reference)
+├── docker-compose.swarm.yml      # DB-less mode Swarm deployment
+├── docker-compose.db.swarm.yml   # Database mode Swarm deployment (PostgreSQL)
+├── docker-compose.yml            # Standard compose (for reference)
 ├── kong/
-│   └── kong.yml               # Kong declarative configuration
+│   └── kong.yml                  # Kong declarative configuration
 ├── scripts/
-│   ├── swarm_up.sh           # Deploy to Swarm
-│   ├── swarm_down.sh         # Remove from Swarm
-│   ├── test_api.sh           # Full API test suite
-│   ├── test_rate_limit.sh    # Rate limiting test
-│   └── test_load_balance.sh  # Load balancing test
-├── workflow.md               # Request lifecycle documentation
-├── auth_service/             # Authentication service (3 replicas)
-├── user_service/             # User management service (3 replicas)
-├── trade_service/            # Trading service (3 replicas)
-└── notification_service/     # Notification service (3 replicas)
+│   ├── swarm_up.sh              # Deploy DB-less mode to Swarm
+│   ├── swarm_down.sh            # Remove DB-less stack
+│   ├── db_swarm_up.sh           # Deploy Database mode to Swarm
+│   ├── db_swarm_down.sh         # Remove Database stack
+│   ├── deck_sync.sh             # Apply kong.yml to database
+│   ├── deck_diff.sh             # Show diff between file and database
+│   ├── deck_dump.sh             # Export database config to file
+│   ├── test_api.sh              # Full API test suite
+│   ├── test_rate_limit.sh       # Rate limiting test
+│   └── test_load_balance.sh     # Load balancing test
+├── workflow.md                   # Request lifecycle documentation
+├── request_cycle_and_kong_flow.md # Detailed Kong concepts
+├── auth_service/                 # Authentication service (3 replicas)
+├── user_service/                 # User management service (3 replicas)
+├── trade_service/                # Trading service (3 replicas)
+└── notification_service/         # Notification service (3 replicas)
 ```
 
 ## Troubleshooting
@@ -234,9 +349,15 @@ kong/
 ### Check Service Status
 
 ```bash
+# DB-less mode
 docker stack services kongdemo
 docker service logs kongdemo_auth_service
 docker service ps kongdemo_auth_service
+
+# Database mode
+docker stack services kongdb
+docker service logs kongdb_kong
+docker service logs kongdb_postgres
 ```
 
 ### Check Kong Configuration
@@ -260,13 +381,37 @@ curl http://127.0.0.1:8001/plugins | jq .
 | 401 on protected routes | Include `Authorization: Bearer <token>` header |
 | 429 rate limited | Wait 1 second, rate limit is 10 req/sec |
 | Kong Manager not loading | Verify Kong is healthy: `curl http://127.0.0.1:8001/status` |
+| decK sync fails | Ensure Kong Admin API is accessible: `curl http://127.0.0.1:8001/status` |
+| PostgreSQL connection failed | Check postgres logs: `docker service logs kongdb_postgres` |
 
-### Reset Everything
+### Reset Everything (DB-less Mode)
 
 ```bash
 ./scripts/swarm_down.sh
 docker system prune -f
 ./scripts/swarm_up.sh
+```
+
+### Reset Everything (Database Mode)
+
+```bash
+./scripts/db_swarm_down.sh
+docker volume rm kongdb_kong_postgres_data  # Delete all config data
+docker system prune -f
+./scripts/db_swarm_up.sh
+```
+
+### Detecting Configuration Drift (Database Mode)
+
+```bash
+# See what changed between file and database
+./scripts/deck_diff.sh
+
+# Option A: Apply file to database (overwrite drift)
+./scripts/deck_sync.sh
+
+# Option B: Export database to file (accept drift)
+./scripts/deck_dump.sh kong/kong.yml
 ```
 
 ## Deploy on Live Server
@@ -317,7 +462,18 @@ sudo ufw deny 8002/tcp
 ## Additional Documentation
 
 - **workflow.md** - Detailed request lifecycle, plugin behavior, failure scenarios
+- **request_cycle_and_kong_flow.md** - Comprehensive Kong concepts and architecture
 - **kong/kong.yml** - Kong declarative configuration with comments
+
+## decK Commands Reference
+
+| Command | Description |
+|---------|-------------|
+| `./scripts/deck_sync.sh` | Apply `kong/kong.yml` to PostgreSQL database |
+| `./scripts/deck_diff.sh` | Show differences between file and database |
+| `./scripts/deck_dump.sh [file]` | Export database config to file (default: `kong/kong.exported.yml`) |
+
+**Note:** decK commands only work in Database mode (`./scripts/db_swarm_up.sh`).
 
 ## License
 

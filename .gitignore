@@ -34,3 +34,6 @@ logs/
 # Temporary files
 *.tmp
 *.temp
+
+# Kong exported config (generated on-demand)
+kong/kong.exported.yml

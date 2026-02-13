@@ -680,6 +680,102 @@ curl http://127.0.0.1:8001/status | jq .
 
 ---
 
+## Database Mode with decK (GitOps Hybrid)
+
+This project supports two deployment modes:
+
+### Comparison
+
+| Mode | Config Storage | Config Updates | Deploy Script |
+|------|----------------|----------------|---------------|
+| **DB-less** | YAML file | Redeploy stack | `./scripts/swarm_up.sh` |
+| **Database** | PostgreSQL | decK sync | `./scripts/db_swarm_up.sh` |
+
+### How Database Mode Works
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                  DATABASE MODE ARCHITECTURE                       │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   Developer                    decK                   Kong       │
+│      │                          │                       │        │
+│      │ 1. Edit kong.yml         │                       │        │
+│      │────────────────►         │                       │        │
+│      │                          │                       │        │
+│      │ 2. Run deck_sync.sh      │                       │        │
+│      │─────────────────────────►│                       │        │
+│      │                          │                       │        │
+│      │                          │ 3. Compare with DB    │        │
+│      │                          │──────────────────────►│        │
+│      │                          │◄──────────────────────│        │
+│      │                          │                       │        │
+│      │                          │ 4. Apply changes      │        │
+│      │                          │──────────────────────►│        │
+│      │                          │                       │        │
+│      │                          │         ┌─────────────┴──┐     │
+│      │                          │         │   PostgreSQL   │     │
+│      │                          │         │   (persisted)  │     │
+│      │                          │         └────────────────┘     │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Configuration Lifecycle
+
+```bash
+# Step 1: Edit configuration
+vim kong/kong.yml
+
+# Step 2: Preview changes
+./scripts/deck_diff.sh
+
+# Step 3: Apply changes
+./scripts/deck_sync.sh
+
+# Step 4: Verify (config persists across restarts!)
+docker service update --force kongdb_kong
+# After restart, all routes/plugins still exist
+```
+
+### decK Commands
+
+| Command | Purpose |
+|---------|---------|
+| `./scripts/deck_sync.sh` | Apply kong.yml to database |
+| `./scripts/deck_diff.sh` | Show what would change |
+| `./scripts/deck_dump.sh` | Export DB config to file |
+
+### Verifying Persistence
+
+```bash
+# 1. Check routes exist
+curl http://127.0.0.1:8001/routes | jq '.data[].name'
+
+# 2. Restart Kong
+docker service update --force kongdb_kong
+
+# 3. Routes still exist (from PostgreSQL)
+curl http://127.0.0.1:8001/routes | jq '.data[].name'
+```
+
+### Detecting Drift
+
+If someone modifies Kong directly via Admin API:
+
+```bash
+# Check for differences
+./scripts/deck_diff.sh
+
+# Option A: Overwrite drift with file
+./scripts/deck_sync.sh
+
+# Option B: Accept drift and update file
+./scripts/deck_dump.sh kong/kong.yml
+```
+
+---
+
 ## Summary
 
 Kong acts as the **single entry point** for all API traffic:

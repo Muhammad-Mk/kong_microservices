@@ -487,11 +487,168 @@ curl http://localhost:8000/v1/auth/health
 # Each may show different instance IDs
 ```
 
+## Database Mode with decK (GitOps Hybrid)
+
+This project supports two deployment modes:
+
+| Mode | Config Storage | Config Updates | Use Case |
+|------|----------------|----------------|----------|
+| **DB-less** | YAML file (kong.yml) | Redeploy stack | Simple, immutable |
+| **Database** | PostgreSQL | decK sync | Production, dynamic |
+
+### Database Mode Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        DATABASE MODE (GitOps Hybrid)                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   ┌──────────────┐         ┌──────────────┐         ┌──────────────┐       │
+│   │ kong/kong.yml│  ─────► │     decK     │  ─────► │  PostgreSQL  │       │
+│   │ (Git repo)   │  sync   │   (GitOps)   │  write  │  (Database)  │       │
+│   └──────────────┘         └──────────────┘         └──────────────┘       │
+│                                                            │                │
+│                                                            │ read           │
+│                                                            ▼                │
+│                                                     ┌──────────────┐       │
+│                                                     │     Kong     │       │
+│                                                     │   Gateway    │       │
+│                                                     └──────────────┘       │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Configuration Lifecycle in Database Mode
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                  GITOPS CONFIGURATION LIFECYCLE                  │
+└─────────────────────────────────────────────────────────────────┘
+
+Step 1: Developer edits configuration
+─────────────────────────────────────
+    vim kong/kong.yml
+    # Add new route, plugin, or consumer
+
+Step 2: Preview changes with deck diff
+─────────────────────────────────────
+    ./scripts/deck_diff.sh
+    
+    Output:
+    creating service auth-service-v2
+    updating route user-routes
+    deleting plugin old-plugin
+
+Step 3: Apply changes with deck sync
+─────────────────────────────────────
+    ./scripts/deck_sync.sh
+    
+    Changes are written to PostgreSQL.
+    Kong immediately picks up new configuration.
+    No restart required!
+
+Step 4: Verify in Kong Manager
+─────────────────────────────────────
+    Open http://localhost:8002
+    See new services, routes, plugins
+
+Step 5: Commit to Git (optional)
+─────────────────────────────────────
+    git add kong/kong.yml
+    git commit -m "Add new route for v2 API"
+    git push
+```
+
+### Key Differences: DB-less vs Database Mode
+
+| Aspect | DB-less Mode | Database Mode |
+|--------|--------------|---------------|
+| **Config File** | Required (`KONG_DECLARATIVE_CONFIG`) | Optional (use decK) |
+| **Persistence** | None (config in YAML) | PostgreSQL |
+| **Hot Reload** | Requires restart | Immediate (via Admin API/decK) |
+| **Kong Manager** | Read-only | Full access |
+| **Multi-node** | Each node loads YAML | Shared database |
+| **Backup** | Git version control | Database backup + decK dump |
+
+### decK Commands
+
+```bash
+# Apply kong/kong.yml to database
+./scripts/deck_sync.sh
+
+# Show what would change (dry-run)
+./scripts/deck_diff.sh
+
+# Export database config to file (backup/audit)
+./scripts/deck_dump.sh [output_file]
+```
+
+### Verifying Persistence After Restart
+
+In Database mode, configuration survives Kong restarts:
+
+```bash
+# 1. Check current routes
+curl http://127.0.0.1:8001/routes | jq '.data[].name'
+
+# 2. Restart Kong
+docker service update --force kongdb_kong
+
+# 3. Wait for Kong to be healthy
+sleep 30
+
+# 4. Verify routes still exist
+curl http://127.0.0.1:8001/routes | jq '.data[].name'
+# Same routes should appear - they're in PostgreSQL!
+```
+
+### Detecting Configuration Drift
+
+If someone modifies Kong via Admin API directly:
+
+```bash
+# 1. Check for drift
+./scripts/deck_diff.sh
+
+# Output shows differences between kong.yml and database
+
+# 2. Option A: Sync file to database (overwrite drift)
+./scripts/deck_sync.sh
+
+# 2. Option B: Export database to file (accept drift)
+./scripts/deck_dump.sh kong/kong.yml
+```
+
+### Database Mode Deployment Commands
+
+```bash
+# Deploy Database mode stack
+./scripts/db_swarm_up.sh
+
+# Remove Database mode stack (preserves data volume)
+./scripts/db_swarm_down.sh
+
+# Apply configuration changes
+./scripts/deck_sync.sh
+
+# Check for drift
+./scripts/deck_diff.sh
+
+# Export current config
+./scripts/deck_dump.sh
+```
+
+---
+
 ## Quick Reference
 
 ### Commands
 
 ```bash
+# ============================================
+# DB-less Mode (Declarative)
+# ============================================
+
 # Deploy stack
 ./scripts/swarm_up.sh
 
@@ -515,6 +672,34 @@ docker service logs kongdemo_auth_service
 
 # Scale service (temporary, reverts on redeploy)
 docker service scale kongdemo_auth_service=5
+
+# ============================================
+# Database Mode (PostgreSQL + decK)
+# ============================================
+
+# Deploy stack with PostgreSQL
+./scripts/db_swarm_up.sh
+
+# Remove stack (keeps data volume)
+./scripts/db_swarm_down.sh
+
+# Sync config from file to database
+./scripts/deck_sync.sh
+
+# Show diff between file and database
+./scripts/deck_diff.sh
+
+# Export database config to file
+./scripts/deck_dump.sh
+
+# View services
+docker stack services kongdb
+
+# View Kong logs
+docker service logs kongdb_kong
+
+# View PostgreSQL logs
+docker service logs kongdb_postgres
 ```
 
 ### Ports
